@@ -28,6 +28,37 @@ IR::BlockList GenerateBlocks(const IR::AbstractSyntaxList& syntax_list) {
     return blocks;
 }
 
+void EmitControlFlowGraph(IR::Program& program) {
+    Gcn::Translator translator{info, runtime_info, profile};
+    bool emit_prologue = true;
+    for (auto& block : cfg) {
+        const u32 start = block.begin_index;
+        const u32 size = block.end_index - start + 1;
+        auto* ir_block = pools.block_pool.Create(pools.inst_pool);
+        ir_block->cfg_block = &block;
+        block.ir_block = ir_block;
+        translator.Translate(ir_block, block.begin,
+                             std::span{program.ins_list}.subspan(start, size));
+        if (emit_prologue) {
+            translator.EmitPrologue(ir_block);
+            emit_prologue = false;
+        }
+        program.blocks.push_back(ir_block);
+    }
+    for (auto& block : cfg) {
+        auto* ir_block = block.ir_block;
+        if (block.branch_true) {
+            auto* true_block = block.branch_true->ir_block;
+            ir_block->AddBranch(true_block);
+        }
+        if (block.branch_false) {
+            auto* false_block = block.branch_false->ir_block;
+            ir_block->AddBranch(false_block);
+        }
+    }
+    program.post_order_blocks = Shader::IR::PostOrder(program.blocks.front());
+}
+
 IR::Program TranslateProgram(const std::span<const u32>& code, Pools& pools, Info& info,
                              RuntimeInfo& runtime_info, const Profile& profile) {
     // Ensure first instruction is expected.
@@ -52,6 +83,7 @@ IR::Program TranslateProgram(const std::span<const u32>& code, Pools& pools, Inf
     // Create control flow graph
     Common::ObjectPool<Gcn::Block> gcn_block_pool{64};
     Gcn::CFG cfg{gcn_block_pool, program.ins_list};
+    Gcn::Translator translator{info, runtime_info, profile};
 
     // Structurize control flow graph and create program.
     program.syntax_list =
