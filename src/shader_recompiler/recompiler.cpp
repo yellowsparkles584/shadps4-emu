@@ -4,6 +4,7 @@
 #include "shader_recompiler/frontend/control_flow_graph.h"
 #include "shader_recompiler/frontend/decode.h"
 #include "shader_recompiler/frontend/structured_control_flow.h"
+#include "shader_recompiler/frontend/translate/translate.h"
 #include "shader_recompiler/ir/passes/ir_passes.h"
 #include "shader_recompiler/ir/post_order.h"
 #include "shader_recompiler/profile.h"
@@ -28,8 +29,9 @@ IR::BlockList GenerateBlocks(const IR::AbstractSyntaxList& syntax_list) {
     return blocks;
 }
 
-void EmitControlFlowGraph(IR::Program& program) {
-    Gcn::Translator translator{info, runtime_info, profile};
+void EmitControlFlowGraph(IR::Program& program, Pools& pools, Gcn::CFG& cfg,
+                          RuntimeInfo& runtime_info, const Profile& profile) {
+    Gcn::Translator translator{program.info, runtime_info, profile};
     bool emit_prologue = true;
     for (auto& block : cfg) {
         const u32 start = block.begin_index;
@@ -83,19 +85,13 @@ IR::Program TranslateProgram(const std::span<const u32>& code, Pools& pools, Inf
     // Create control flow graph
     Common::ObjectPool<Gcn::Block> gcn_block_pool{64};
     Gcn::CFG cfg{gcn_block_pool, program.ins_list};
-    Gcn::Translator translator{info, runtime_info, profile};
-
-    // Structurize control flow graph and create program.
-    program.syntax_list =
-        Shader::Gcn::BuildASL(pools.inst_pool, pools.block_pool, cfg, info, runtime_info, profile);
-    program.blocks = GenerateBlocks(program.syntax_list);
-    program.post_order_blocks = Shader::IR::PostOrder(program.syntax_list.front().data.block);
+    EmitControlFlowGraph(program, pools, cfg, runtime_info, profile);
 
     // On NVIDIA GPUs HW interpolation of clip distance values seems broken, and we need to emulate
     // it with expensive discard in PS.
     Shader::InjectClipDistanceAttributes(program, runtime_info);
 
-    // Run optimization passes
+    // Run optimization passes on unstructured graph
     if (!profile.support_float64) {
         Shader::Optimization::LowerFp64ToFp32(program);
     }
@@ -116,11 +112,26 @@ IR::Program TranslateProgram(const std::span<const u32>& code, Pools& pools, Inf
     Shader::Optimization::LowerBufferFormatToRaw(program);
     Shader::Optimization::SharedMemorySimplifyPass(program, profile);
     Shader::Optimization::SharedMemoryToStoragePass(program, runtime_info, profile);
-    Shader::Optimization::SharedMemoryBarrierPass(program, runtime_info, profile);
     Shader::Optimization::IdentityRemovalPass(program.blocks);
-    Shader::Optimization::DeadCodeEliminationPass(program);
     Shader::Optimization::ConstantPropagationPass(program.post_order_blocks);
     Shader::Optimization::LowerUserClipPlanes(program, runtime_info);
+
+    // Prepare for structurization by clearing flow graph and destroying phis
+    for (auto* ir_block : program.blocks) {
+        ir_block->imm_predecessors.clear();
+        ir_block->imm_successors.clear();
+    }
+    Shader::Optimization::SsaDestroyPass(program);
+
+    // Structurize control flow graph and create program.
+    program.syntax_list = Shader::Gcn::BuildASL(pools, cfg, info);
+    program.blocks = GenerateBlocks(program.syntax_list);
+    program.post_order_blocks = Shader::IR::PostOrder(program.syntax_list.front().data.block);
+
+    // Run optimization passes on structured graph
+    Shader::Optimization::SsaRewritePass(program);
+    Shader::Optimization::SharedMemoryBarrierPass(program, runtime_info, profile);
+    Shader::Optimization::DeadCodeEliminationPass(program);
     Shader::Optimization::CollectShaderInfoPass(program, profile);
 
     Shader::IR::DumpProgram(program, info);
