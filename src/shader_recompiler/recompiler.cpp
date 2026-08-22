@@ -57,7 +57,7 @@ IR::Program TranslateProgram(const std::span<const u32>& code, Pools& pools, Inf
     program.syntax_list =
         Shader::Gcn::BuildASL(pools.inst_pool, pools.block_pool, cfg, info, runtime_info, profile);
     program.blocks = GenerateBlocks(program.syntax_list);
-    program.post_order_blocks = Shader::IR::PostOrder(program.syntax_list.front());
+    program.post_order_blocks = Shader::IR::PostOrder(program.syntax_list.front().data.block);
 
     // On NVIDIA GPUs HW interpolation of clip distance values seems broken, and we need to emulate
     // it with expensive discard in PS.
