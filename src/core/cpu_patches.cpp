@@ -807,8 +807,6 @@ static bool TryExecuteIllegalInstruction(void* ctx, void* code_address) {
     u8 reg = (modrm >> 3) & 0b111;
     u8 mod = (modrm >> 6) & 0b11;
 
-    ASSERT(mod == 0b11); // Any instruction we interpret here uses reg/reg addressing only
-
     int dstIndex = reg;
     int srcIndex = rm;
 
