@@ -800,8 +800,6 @@ static bool TryExecuteIllegalInstruction(void* ctx, void* code_address) {
         return false;
     }
 
-    ASSERT(bytes[1] == 0x0F && (bytes[2] == 0x79 || bytes[2] == 0x01));
-
     // Note: It's guaranteed that there's no REX prefix in these instructions checked by
     // Is4ByteExtrqOrInsertq
     u8 modrm = bytes[3];
