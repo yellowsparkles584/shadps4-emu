@@ -697,21 +697,6 @@ static bool Is4ByteExtrqOrInsertq(void* code_address) {
     }
 }
 
-static bool IsRdtscpInstruction(void* code_address) {
-    const u8* bytes = static_cast<const u8*>(code_address);
-    return bytes[0] == 0x0F && bytes[1] == 0x01 && bytes[2] == 0xF9;
-}
-
-static void SetRegister64(void* ctx, ZydisRegister reg, u64 value) {
-    auto* context = static_cast<EXCEPTION_POINTERS*>(ctx)->ContextRecord;
-    switch (reg) {
-    case ZYDIS_REGISTER_RAX: context->Rax = value; break;
-    case ZYDIS_REGISTER_RCX: context->Rcx = value; break;
-    case ZYDIS_REGISTER_RDX: context->Rdx = value; break;
-    default: break;
-    }
-}
-
 static void* GetXmmPointer(void* ctx, u8 index) {
 #if defined(_WIN32)
 #define CASE(index)                                                                                \
@@ -786,8 +771,6 @@ static bool TryExecuteIllegalInstruction(void* ctx, void* code_address) {
         mnemonic = ZYDIS_MNEMONIC_EXTRQ;
     } else if (bytes[0] == 0xF2) {
         mnemonic = ZYDIS_MNEMONIC_INSERTQ;
-    } else if (bytes[0] == 0x0F && bytes[1] == 0x01 && bytes[2] == 0xF9) {
-        mnemonic = ZYDIS_MNEMONIC_RDTSCP;
     } else {
         ZydisDecodedInstruction instruction;
         ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT];
@@ -800,12 +783,16 @@ static bool TryExecuteIllegalInstruction(void* ctx, void* code_address) {
         return false;
     }
 
+    ASSERT(bytes[1] == 0x0F && bytes[2] == 0x79);
+
     // Note: It's guaranteed that there's no REX prefix in these instructions checked by
     // Is4ByteExtrqOrInsertq
     u8 modrm = bytes[3];
     u8 rm = modrm & 0b111;
     u8 reg = (modrm >> 3) & 0b111;
     u8 mod = (modrm >> 6) & 0b11;
+
+    ASSERT(mod == 0b11); // Any instruction we interpret here uses reg/reg addressing only
 
     int dstIndex = reg;
     int srcIndex = rm;
@@ -891,24 +878,13 @@ static bool TryExecuteIllegalInstruction(void* ctx, void* code_address) {
 
         return true;
     }
-    case ZYDIS_MNEMONIC_RDTSCP: {
-        unsigned int aux = 0;
-        unsigned __int64 tsc = __rdtscp(&aux);
-
-        // RDTSCP returns low 32 bits in RAX, high 32 bits in RDX, and IA32_TSC_AUX in RCX
-        SetRegister64(ctx, ZYDIS_REGISTER_RAX, tsc & 0xFFFFFFFF);
-        SetRegister64(ctx, ZYDIS_REGISTER_RDX, (tsc >> 32) & 0xFFFFFFFF);
-        SetRegister64(ctx, ZYDIS_REGISTER_RCX, aux);
-
-        IncrementRip(ctx, 3); // RDTSCP instruction length is 3 bytes
+    default: {
+        IncrementRip(ctx, 2); 
         return true;
     }
-    default: {
-        UNREACHABLE();
-    }
     }
 
-    UNREACHABLE();
+    return true;
 }
 
 static bool TryPatchJit(void* code_address) {
@@ -2168,7 +2144,7 @@ static bool PatchesIllegalInstructionHandler(void* context) {
     constexpr bool inspect_short_cpu_patch = true;
 #endif
     if (inspect_short_cpu_patch && // Windows static guest red-zone protection
-       (Is4ByteExtrqOrInsertq(code_address) || IsRdtscpInstruction(code_address))) {
+        Is4ByteExtrqOrInsertq(code_address)) {
         // The instruction is not big enough for a relative jump, don't try to patch it and pass it
         // to our illegal instruction interpreter directly
         return TryExecuteIllegalInstruction(context, code_address);
@@ -2188,7 +2164,7 @@ static bool PatchesIllegalInstructionHandler(void* context) {
                 LOG_ERROR(Core, "Failed to patch address {:x} -- mnemonic: (failed to decode)",
                           reinterpret_cast<u64>(code_address));
             }
-            return false;
+            return TryExecuteIllegalInstruction(context, code_address);
         }
     }
 
