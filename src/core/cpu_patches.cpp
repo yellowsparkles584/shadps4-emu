@@ -897,7 +897,7 @@ static bool TryExecuteIllegalInstruction(void* ctx, void* code_address) {
         // RDTSCP returns low 32 bits in RAX, high 32 bits in RDX, and IA32_TSC_AUX in RCX
         SetRegister64(ctx, ZYDIS_REGISTER_RAX, tsc & 0xFFFFFFFF);
         SetRegister64(ctx, ZYDIS_REGISTER_RDX, (tsc >> 32) & 0xFFFFFFFF);
-        SetRegister64(ctx, ZYDIS_REGISTER_RCX, aux);
+        SetRegister64(ctx, ZYDIS_REGISTER_RCX, 0);
 
         IncrementRip(ctx, 3); // RDTSCP instruction length is 3 bytes
         return true;
